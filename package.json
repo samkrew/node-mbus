@@ -17,13 +17,19 @@
     "name": "Semen Krivosheev",
     "email": "semen.krivosheev@gmail.com"
   },
-  "maintainers": [{
-    "name": "Semen Krivosheev",
-    "email": "semen.krivosheev@gmail.com"
-  }],
+  "maintainers": [
+    {
+      "name": "Semen Krivosheev",
+      "email": "semen.krivosheev@gmail.com"
+    }
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/samkrew/node_mbus"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "bindings": "~1.2.1",
+    "nan": "~1.6.2"
+  }
 }

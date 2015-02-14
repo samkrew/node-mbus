@@ -14,6 +14,7 @@
 			],
 			'include_dirs': [
 				'../libmodbus/mbus',
+				"<!(node -e \"require('nan')\")"
 			],
 			'sources': [
 				'./src/main.cc'

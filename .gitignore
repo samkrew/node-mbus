@@ -2,5 +2,4 @@ libmbus
 build
 src/old.cc
 node_modules
-test.js
 *.build

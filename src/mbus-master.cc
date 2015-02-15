@@ -8,6 +8,7 @@ Persistent<Function> MbusMaster::constructor;
 
 MbusMaster::MbusMaster() {
   connected = false;
+  serial = true;
   handle = NULL;
   uv_rwlock_init(&queueLock);
 }
@@ -31,9 +32,11 @@ void MbusMaster::Init(Handle<Object> module) {
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
   // Prototype
-  NODE_SET_PROTOTYPE_METHOD(tpl, "open", Open);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "openSerial", OpenSerial);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "openTCP", OpenTCP);
   NODE_SET_PROTOTYPE_METHOD(tpl, "close", Close);
   NODE_SET_PROTOTYPE_METHOD(tpl, "get", Get);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "scan", ScanSecondary);
 
   NanAssignPersistent(constructor, tpl->GetFunction());
   module->Set(NanNew<String>("exports"), tpl->GetFunction());
@@ -56,7 +59,41 @@ NAN_METHOD(MbusMaster::New) {
   }
 }
 
-NAN_METHOD(MbusMaster::Open) {
+NAN_METHOD(MbusMaster::OpenTCP) {
+  NanScope();
+
+  MbusMaster* obj = ObjectWrap::Unwrap<MbusMaster>(args.Holder());
+
+  int port = (long)args[1]->IntegerValue();
+  char *host = get(args[0]->ToString(), "127.0.0.1");
+
+  obj->serial = false;
+
+  if(!obj->connected) {
+    if ((port < 0) || (port > 0xFFFF))
+    {
+        free(host);
+        NanReturnValue(NanFalse());
+    }
+    if (!(obj->handle = mbus_context_tcp(host,port)))
+    {
+        free(host);
+        NanReturnValue(NanFalse());
+    }
+    free(host);
+    if (mbus_connect(obj->handle) == -1)
+    {
+      mbus_context_free(obj->handle);
+      obj->handle = NULL;
+      NanReturnValue(NanFalse());
+    }
+    obj->connected = true;
+    NanReturnValue(NanTrue());
+  }
+  NanReturnValue(NanFalse());
+}
+
+NAN_METHOD(MbusMaster::OpenSerial) {
   NanScope();
 
   MbusMaster* obj = ObjectWrap::Unwrap<MbusMaster>(args.Holder());
@@ -64,6 +101,8 @@ NAN_METHOD(MbusMaster::Open) {
   long boudrate;
   int _boudrate = args[1]->IntegerValue();
   char *port = get(args[0]->ToString(), "/dev/ttyS0");
+
+  obj->serial = true;
 
   switch(_boudrate) {
     case 300:
@@ -181,6 +220,7 @@ class RecieveWorker : public NanAsyncWorker {
         mbus_context_free(handle);
         sprintf(error, "Failed to init slaves.");
         SetErrorMessage(error);
+        uv_rwlock_wrunlock(lock);
         return;
     }
 
@@ -196,18 +236,21 @@ class RecieveWorker : public NanAsyncWorker {
         {
             sprintf(error, "The address mask [%s] matches more than one device.", addr_str);
             SetErrorMessage(error);
+            uv_rwlock_wrunlock(lock);
             return;
         }
         else if (ret == MBUS_PROBE_NOTHING)
         {
             sprintf(error, "The selected secondary address does not match any device [%s].", addr_str);
             SetErrorMessage(error);
+            uv_rwlock_wrunlock(lock);
             return;
         }
         else if (ret == MBUS_PROBE_ERROR)
         {
             sprintf(error, "Failed to select secondary address [%s].", addr_str);
             SetErrorMessage(error);
+            uv_rwlock_wrunlock(lock);
             return;
         }
         // else MBUS_PROBE_SINGLE
@@ -224,6 +267,7 @@ class RecieveWorker : public NanAsyncWorker {
     {
         sprintf(error, "Failed to send M-Bus request frame[%s].", addr_str);
         SetErrorMessage(error);
+        uv_rwlock_wrunlock(lock);
         return;
     }
 
@@ -231,6 +275,7 @@ class RecieveWorker : public NanAsyncWorker {
     {
         sprintf(error, "Failed to receive M-Bus response frame[%s].", addr_str);
         SetErrorMessage(error);
+        uv_rwlock_wrunlock(lock);
         return;
     }
 
@@ -241,6 +286,7 @@ class RecieveWorker : public NanAsyncWorker {
     {
         sprintf(error, "M-bus data parse error [%s].", addr_str);
         SetErrorMessage(error);
+        uv_rwlock_wrunlock(lock);
         return;
     }
 
@@ -251,6 +297,7 @@ class RecieveWorker : public NanAsyncWorker {
     {
         sprintf(error, "Failed to generate JSON representation of MBUS frame [%s].", addr_str);
         SetErrorMessage(error);
+        uv_rwlock_wrunlock(lock);
         return;
     }
 
@@ -273,7 +320,7 @@ class RecieveWorker : public NanAsyncWorker {
         NanNull(),
         NanNew<String>(data)
     };
-
+    free(data);
     callback->Call(2, argv);
   };
   void HandleErrorCallback () {
@@ -288,7 +335,6 @@ class RecieveWorker : public NanAsyncWorker {
   private:
     char *data;
     char *addr_str;
-    bool error;
     uv_rwlock_t *lock;
     mbus_handle *handle;
 };
@@ -302,6 +348,139 @@ NAN_METHOD(MbusMaster::Get) {
   NanCallback *callback = new NanCallback(args[1].As<Function>());
   if(obj->connected) {
     NanAsyncQueueWorker(new RecieveWorker(callback, address, &(obj->queueLock), obj->handle));
+  } else {
+    Local<Value> argv[] = {
+        NanError("Not connected to port")
+    };
+    callback->Call(1, argv);
+  }
+  NanReturnUndefined();
+}
+
+class ScanSecondaryWorker : public NanAsyncWorker {
+ public:
+  ScanSecondaryWorker(NanCallback *callback,uv_rwlock_t *lock, mbus_handle *handle)
+    : NanAsyncWorker(callback), lock(lock), handle(handle) {}
+  ~ScanSecondaryWorker() {
+  }
+
+  // Executed inside the worker-thread.
+  // It is not safe to access V8, or V8 data structures
+  // here, so everything we need for input and output
+  // should go on `this`.
+  void Execute () {
+    uv_rwlock_wrlock(lock);
+
+    mbus_frame *frame = NULL, reply;
+    char error[100];
+    int i, i_start = 0, i_end = 9, probe_ret;
+    char mask[17], matching_mask[17], buffer[22];
+    int pos = 0;
+
+    strcpy(mask,"FFFFFFFFFFFFFFFF");
+
+    memset((void *)&reply, 0, sizeof(mbus_frame));
+
+    frame = mbus_frame_new(MBUS_FRAME_TYPE_SHORT);
+
+    if (frame == NULL)
+    {
+        sprintf(error, "Failed to allocate mbus frame.");
+        free(frame);
+        uv_rwlock_wrunlock(lock);
+        return;
+    }
+
+    if (init_slaves(handle) == 0)
+    {
+        free(frame);
+        uv_rwlock_wrunlock(lock);
+        return;
+    }
+
+    data = strdup("[");
+
+    for (i = i_start; i <= i_end; i++)
+    {
+        mask[pos] = '0'+i;
+
+        if (handle->scan_progress)
+            handle->scan_progress(handle,mask);
+
+        probe_ret = mbus_probe_secondary_address(handle, mask, matching_mask);
+
+        if (probe_ret == MBUS_PROBE_SINGLE)
+        {
+            if (!handle->found_event)
+            {
+                sprintf(buffer,"\"%s\",",matching_mask);
+                data = (char*)realloc(data, strlen(data) + strlen(buffer) + sizeof(char));
+                if(!data) {
+                  sprintf(error,"Failed to allocate data");
+                  SetErrorMessage(error);
+                  uv_rwlock_wrunlock(lock);
+                  return;
+                }
+                strcat(data,buffer);
+            }
+        }
+        else if (probe_ret == MBUS_PROBE_COLLISION)
+        {
+            // collision, more than one device matching, restrict the search mask further
+            mbus_scan_2nd_address_range(handle, pos+1, mask);
+        }
+        else if (probe_ret == MBUS_PROBE_NOTHING)
+        {
+             // nothing... move on to next address mask
+        }
+        else // MBUS_PROBE_ERROR
+        {
+            sprintf(error,"Failed to probe secondary address [%s]", mask);
+            SetErrorMessage(error);
+            free(data);
+            uv_rwlock_wrunlock(lock);
+            return;
+        }
+    }
+    data[strlen(data) - 1] = '\0';
+    uv_rwlock_wrunlock(lock);
+  }
+
+  // Executed when the async work is complete
+  // this function will be run inside the main event loop
+  // so it is safe to use V8 again
+  void HandleOKCallback () {
+    NanScope();
+
+    Local<Value> argv[] = {
+        NanNull(),
+        NanNew<String>(data)
+    };
+    free(data);
+    callback->Call(2, argv);
+  };
+  void HandleErrorCallback () {
+    NanScope();
+
+    Local<Value> argv[] = {
+        NanError(ErrorMessage())
+    };
+    callback->Call(1, argv);
+  }
+  private:
+    char *data;
+    uv_rwlock_t *lock;
+    mbus_handle *handle;
+};
+
+NAN_METHOD(MbusMaster::ScanSecondary) {
+  NanScope();
+
+  MbusMaster* obj = ObjectWrap::Unwrap<MbusMaster>(args.Holder());
+
+  NanCallback *callback = new NanCallback(args[0].As<Function>());
+  if(obj->connected) {
+    NanAsyncQueueWorker(new ScanSecondaryWorker(callback, &(obj->queueLock), obj->handle));
   } else {
     Local<Value> argv[] = {
         NanError("Not connected to port")

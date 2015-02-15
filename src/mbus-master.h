@@ -3,22 +3,25 @@
 
 #include <node.h>
 #include <nan.h>
-extern "C" {
-	#include <mbus.h>
-}
+#include <mbus.h>
+#include <uv.h>
 
 class MbusMaster : public node::ObjectWrap {
  public:
   static void Init(v8::Handle<v8::Object> module);
 
  private:
-  explicit MbusMaster(v8::Handle<v8::String>, int boudrate = 2400);
+  explicit MbusMaster();
   ~MbusMaster();
 
   static NAN_METHOD(New);
-  //static NAN_METHOD(PlusOne);
+  static NAN_METHOD(Open);
+  static NAN_METHOD(Close);
+  static NAN_METHOD(Get);
   static v8::Persistent<v8::Function> constructor;
   mbus_handle *handle;
+  bool connected;
+  uv_rwlock_t queueLock;
 };
 
 #endif

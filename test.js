@@ -1,5 +1,27 @@
-var mbus = require('bindings')('mbus');
-
-setInterval(function() {
-	var myMbus = new mbus('/dev/ttys003',2400);
-},1000);
+var mbus = require('bindings')('mbus')();
+console.log('Open:',mbus.open('/dev/pts/6',2400));
+mbus.get(21,function(err,data){
+	console.log('1:',err,data);
+});
+mbus.get(21,function(err,data){
+	console.log('2:',err,data);
+});
+mbus.get(21,function(err,data){
+	console.log('3:',err,data);
+});
+mbus.get(21,function(err,data){
+	console.log('4:',err,data);
+});
+mbus.get(21,function(err,data){
+	console.log('5:',err,data);
+});
+mbus.get(21,function(err,data){
+	console.log('6:',err,data);
+});
+mbus.get(21,function(err,data){
+	console.log('7:',err,data);
+});
+mbus.get(21,function(err,data){
+	console.log('8:',err,data);
+});
+//console.log('Close:',mbus.close());

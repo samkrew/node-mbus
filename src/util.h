@@ -3,6 +3,7 @@
 
 #include <node.h>
 #include <v8.h>
+#include <nan.h>
 
 char *get(v8::Handle<v8::Value> value, const char *fallback = "");
 
